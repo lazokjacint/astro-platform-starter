@@ -145,6 +145,7 @@
   <div class="row"><span class="k">Last delta</span><span class="v" id="s-delta">0 px</span></div>
   <div class="row"><span class="k">Since last event</span><span class="v" id="s-since">— ms</span></div>
   <div class="row"><span class="k">Page uptime</span><span class="v" id="s-uptime">0.0 s</span></div>
+  <div class="row"><span class="k">prerenderReady</span><span class="v dir-none" id="s-ready">false</span></div>
 
   <hr>
 
@@ -183,6 +184,24 @@
   // without bound during a long test run.
   var MAX_BURSTS = 30;
 
+  // Hold Prerender's snapshot until scroll has actually had a chance to
+  // run. Without this, a page with no network requests gets captured
+  // almost immediately, before any scroll-during-render cycle completes.
+  var READY_AFTER_BURSTS = 1;
+  var READY_FALLBACK_MS = 8000;
+  window.prerenderReady = false;
+  var readyTimeoutId = setTimeout(function () {
+    window.prerenderReady = true;
+    renderReadyState('fallback timeout');
+  }, READY_FALLBACK_MS);
+
+  function renderReadyState(reason) {
+    if (el.ready) {
+      el.ready.textContent = window.prerenderReady ? 'true (' + reason + ')' : 'false';
+      el.ready.className = 'v ' + (window.prerenderReady ? 'dir-down' : 'dir-none');
+    }
+  }
+
   var startTime = performance.now();
   var lastY = window.scrollY;
   var lastEventTime = startTime;
@@ -204,7 +223,8 @@
     events: document.getElementById('s-events'),
     dist: document.getElementById('s-dist'),
     burstcount: document.getElementById('s-burstcount'),
-    bursts: document.getElementById('bursts')
+    bursts: document.getElementById('bursts'),
+    ready: document.getElementById('s-ready')
   };
 
   function directionLabel(delta) {
@@ -229,6 +249,12 @@
     if (burstHistory.length > MAX_BURSTS) burstHistory.pop();
     currentBurst = null;
     renderBursts();
+
+    if (!window.prerenderReady && burstHistory.length >= READY_AFTER_BURSTS) {
+      clearTimeout(readyTimeoutId);
+      window.prerenderReady = true;
+      renderReadyState(burstHistory.length + ' burst(s) done');
+    }
   }
 
   function renderBursts() {
@@ -328,6 +354,7 @@
   }
 
   renderLive();
+  renderReadyState('waiting');
   setInterval(renderLive, 500);
 })();
 </script>
