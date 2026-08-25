@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Scroll Detector</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --down: #3fb950;
+    --up: #f0883e;
+    --none: #6e7681;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #f6f8fa;
+    color: var(--text);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  /* Tall scroll track with position markers, so you can watch scroll
+     position visually and confirm how far a scroll action actually moves. */
+  #track {
+    position: relative;
+    width: 100%;
+    height: 400000px;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      #e1e4e8 0,
+      #e1e4e8 1px,
+      transparent 1px,
+      transparent 1000px
+    );
+  }
+
+  .mark {
+    position: absolute;
+    left: 12px;
+    color: #57606a;
+    font-size: 12px;
+    background: #f6f8fa;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #d0d7de;
+  }
+
+  #top-flag, #bottom-flag {
+    position: absolute;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 20px;
+    font-weight: 600;
+    color: #24292f;
+    padding: 24px 0;
+  }
+  #top-flag { top: 0; }
+  #bottom-flag { bottom: 0; }
+
+  /* Fixed stats panel, always visible regardless of scroll position,
+     so a screenshot or rendered snapshot captures the current state. */
+  #panel {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    width: 360px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    z-index: 1000;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+
+  #panel h1 {
+    font-size: 13px;
+    margin: 0 0 10px;
+    color: var(--text);
+    letter-spacing: 0.03em;
+  }
+
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .row .k { color: var(--muted); }
+  .row .v { color: var(--text); font-weight: 600; }
+
+  .dir-down { color: var(--down); }
+  .dir-up { color: var(--up); }
+  .dir-none { color: var(--none); }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 10px 0;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  th, td {
+    text-align: right;
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; }
+
+  #bursts tr:first-child td { color: var(--accent); }
+
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+
+<div id="track">
+  <div id="top-flag">Top of page — y = 0</div>
+  <!-- Position markers get filled in by script below -->
+  <div id="bottom-flag">Bottom of page</div>
+</div>
+
+<div id="panel">
+  <h1>SCROLL DETECTOR</h1>
+
+  <div class="row"><span class="k">Position</span><span class="v" id="s-pos">0 / 0</span></div>
+  <div class="row"><span class="k">Direction</span><span class="v dir-none" id="s-dir">none</span></div>
+  <div class="row"><span class="k">Last delta</span><span class="v" id="s-delta">0 px</span></div>
+  <div class="row"><span class="k">Since last event</span><span class="v" id="s-since">— ms</span></div>
+  <div class="row"><span class="k">Page uptime</span><span class="v" id="s-uptime">0.0 s</span></div>
+
+  <hr>
+
+  <div class="row"><span class="k">Total events</span><span class="v" id="s-events">0</span></div>
+  <div class="row"><span class="k">Total distance</span><span class="v" id="s-dist">0 px</span></div>
+  <div class="row"><span class="k">Bursts detected</span><span class="v" id="s-burstcount">0</span></div>
+
+  <hr>
+
+  <div style="margin-bottom:4px; color: var(--muted);">
+    Recent bursts (newest first)
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Dir</th><th>Dist</th><th>Dur</th><th>Gap before</th><th>Reversals</th>
+      </tr>
+    </thead>
+    <tbody id="bursts">
+      <tr><td colspan="6" class="empty">Waiting for scroll…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // A "burst" is a run of scroll events with no gap larger than this
+  // between them. It approximates one scroll action, so its duration
+  // should line up with the "Scroll speed" setting, and the gap before
+  // the next burst should line up with "Repeat delay" (+ "Scroll delay").
+  var BURST_GAP_MS = 200;
+
+  // Cap how many finished bursts we keep, so the page doesn't grow
+  // without bound during a long test run.
+  var MAX_BURSTS = 30;
+
+  var startTime = performance.now();
+  var lastY = window.scrollY;
+  var lastEventTime = startTime;
+  var eventCount = 0;
+  var totalDistance = 0;
+
+  var burstHistory = [];
+  var currentBurst = null;
+  var burstTimeout = null;
+
+  var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+
+  var el = {
+    pos: document.getElementById('s-pos'),
+    dir: document.getElementById('s-dir'),
+    delta: document.getElementById('s-delta'),
+    since: document.getElementById('s-since'),
+    uptime: document.getElementById('s-uptime'),
+    events: document.getElementById('s-events'),
+    dist: document.getElementById('s-dist'),
+    burstcount: document.getElementById('s-burstcount'),
+    bursts: document.getElementById('bursts')
+  };
+
+  function directionLabel(delta) {
+    if (delta > 0) return { text: 'down', cls: 'dir-down' };
+    if (delta < 0) return { text: 'up', cls: 'dir-up' };
+    return { text: 'none', cls: 'dir-none' };
+  }
+
+  function finishBurst() {
+    if (!currentBurst) return;
+    var dur = currentBurst.lastTime - currentBurst.startTime;
+    var dist = currentBurst.lastY - currentBurst.startY;
+    var dir = directionLabel(dist);
+    burstHistory.unshift({
+      dir: dir,
+      distance: dist,
+      duration: dur,
+      gapBefore: currentBurst.gapBefore,
+      reversals: currentBurst.reversals,
+      events: currentBurst.events
+    });
+    if (burstHistory.length > MAX_BURSTS) burstHistory.pop();
+    currentBurst = null;
+    renderBursts();
+  }
+
+  function renderBursts() {
+    el.burstcount.textContent = burstHistory.length;
+    if (burstHistory.length === 0) {
+      el.bursts.innerHTML = '<tr><td colspan="6" class="empty">Waiting for scroll…</td></tr>';
+      return;
+    }
+    var rows = burstHistory.map(function (b, i) {
+      var gap = (b.gapBefore === null) ? '—' : Math.round(b.gapBefore) + ' ms';
+      return '<tr>' +
+        '<td>' + (burstHistory.length - i) + '</td>' +
+        '<td class="' + b.dir.cls + '">' + b.dir.text + '</td>' +
+        '<td>' + Math.round(b.distance) + ' px</td>' +
+        '<td>' + Math.round(b.duration) + ' ms</td>' +
+        '<td>' + gap + '</td>' +
+        '<td>' + b.reversals + '</td>' +
+        '</tr>';
+    });
+    el.bursts.innerHTML = rows.join('');
+  }
+
+  var pendingRender = false;
+  function scheduleRender() {
+    if (pendingRender) return;
+    pendingRender = true;
+    requestAnimationFrame(renderLive);
+  }
+
+  function renderLive() {
+    pendingRender = false;
+    var y = window.scrollY;
+    el.pos.textContent = Math.round(y) + ' / ' + Math.round(docHeight);
+    el.uptime.textContent = ((performance.now() - startTime) / 1000).toFixed(1) + ' s';
+  }
+
+  function onScroll() {
+    var now = performance.now();
+    var y = window.scrollY;
+    var delta = y - lastY;
+    var interval = now - lastEventTime;
+    var dir = directionLabel(delta);
+
+    eventCount++;
+    totalDistance += Math.abs(delta);
+
+    if (!currentBurst || interval > BURST_GAP_MS) {
+      if (currentBurst) finishBurst();
+      currentBurst = {
+        startTime: now,
+        startY: lastY,
+        lastTime: now,
+        lastY: y,
+        gapBefore: currentBurst === null && burstHistory.length === 0 ? null : interval,
+        reversals: 0,
+        events: 1,
+        lastDelta: delta
+      };
+    } else {
+      if (currentBurst.lastDelta !== 0 && delta !== 0 &&
+          (currentBurst.lastDelta > 0) !== (delta > 0)) {
+        currentBurst.reversals++;
+      }
+      currentBurst.lastTime = now;
+      currentBurst.lastY = y;
+      currentBurst.events++;
+      currentBurst.lastDelta = delta;
+    }
+
+    clearTimeout(burstTimeout);
+    burstTimeout = setTimeout(finishBurst, BURST_GAP_MS + 50);
+
+    el.dir.textContent = dir.text;
+    el.dir.className = 'v ' + dir.cls;
+    el.delta.textContent = (delta > 0 ? '+' : '') + Math.round(delta) + ' px';
+    el.since.textContent = Math.round(interval) + ' ms';
+    el.events.textContent = eventCount;
+    el.dist.textContent = Math.round(totalDistance) + ' px';
+
+    lastY = y;
+    lastEventTime = now;
+    scheduleRender();
+  }
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+
+  // Position markers down the track, so the page has a visible ruler
+  // to check against the reported numbers.
+  var track = document.getElementById('track');
+  var step = 20000;
+  for (var pos = step; pos < docHeight; pos += step) {
+    var mark = document.createElement('div');
+    mark.className = 'mark';
+    mark.style.top = pos + 'px';
+    mark.textContent = 'y = ' + pos.toLocaleString();
+    track.appendChild(mark);
+  }
+
+  renderLive();
+  setInterval(renderLive, 500);
+})();
+</script>
+
+</body>
+</html>

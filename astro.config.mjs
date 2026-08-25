@@ -9,9 +9,9 @@ export default defineConfig({
         plugins: [tailwindcss()]
     },
     integrations: [react()],
-    adapter: netlify({
-        devFeatures: {
-            environmentVariables: true
-        }
-    })
+    // Only enable the Netlify adapter in production to avoid dev-time
+    // Netlify CLI interactions that may require additional permissions.
+    ...(process.env.NODE_ENV === 'production'
+        ? { adapter: netlify({ devFeatures: { environmentVariables: true } }) }
+        : {})
 });
